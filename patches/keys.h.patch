@@ -1,0 +1,11 @@
+diff --git a/source/keys/keys.h b/source/keys/keys.h
+index f8a84c1..f368f62 100644
+--- a/source/keys/keys.h
++++ b/source/keys/keys.h
+@@ -45,6 +45,7 @@
+ #define SAVE_KEY_FAMILY_VAR(name, varname, start) _save_key_family(#name, varname, start, ARRAY_SIZE(name), sizeof(*(name)), text_buffer)
+ 
+ void dump_keys();
++void derive_keys_silent();
+ int save_mariko_partial_keys(u32 start, u32 count, bool append);
+ void derive_amiibo_keys();

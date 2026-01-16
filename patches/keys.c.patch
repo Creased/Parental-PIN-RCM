@@ -1,0 +1,19 @@
+diff --git a/source/keys/keys.c b/source/keys/keys.c
+index 511aef5..ce9830b 100644
+--- a/source/keys/keys.c
++++ b/source/keys/keys.c
+@@ -807,6 +807,15 @@ void derive_amiibo_keys() {
+     gfx_clear_grey(0x1B);
+ }
+ 
++void derive_keys_silent() {
++    gfx_con.mute = true;
++    _key_count = 0;
++    _titlekey_count = 0;
++    color_idx = 0;
++    _derive_keys();
++    gfx_con.mute = false;
++}
++
+ void dump_keys() {
+     minerva_change_freq(FREQ_1600);

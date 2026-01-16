@@ -1,0 +1,46 @@
+diff --git a/source/main.c b/source/main.c
+index 368b820..9514d72 100644
+--- a/source/main.c
++++ b/source/main.c
+@@ -43,6 +43,7 @@
+ #include <utils/util.h>
+ 
+ #include "keys/keys.h"
++#include "pin_recovery.h"
+ 
+ hekate_config h_cfg;
+ boot_cfg_t __attribute__((section ("._boot_cfg"))) b_cfg;
+@@ -309,6 +310,24 @@ void dump_amiibo_keys()
+ 	derive_amiibo_keys();
+ }
+ 
++void recover_pin()
++{
++	char pin[16];
++	gfx_clear_grey(0x1B);
++	gfx_con_setpos(0, 0);
++	gfx_printf("%k=== Parental Control PIN Recovery ===\n\n", 0xFF00FFFF);
++	
++	if (recover_parental_pin(pin)) {
++		gfx_printf("\n%kPIN Code: %s\n\n", 0xFF00FF00, pin);
++	} else {
++		gfx_printf("\n%kPIN not found\n\n", 0xFFFF0000);
++	}
++	
++	gfx_printf("%kPress any button to return...", 0xFFFFFFFF);
++	btn_wait();
++	gfx_clear_grey(0x1B);
++}
++
+ void dump_mariko_partial_keys();
+ 
+ ment_t ment_partials[] = {
+@@ -345,6 +364,8 @@ ment_t ment_top[] = {
+ 	MDEF_HANDLER("Dump from SysNAND", dump_sysnand, colors[0]),
+ 	MDEF_HANDLER("Dump from EmuNAND", dump_emunand, colors[1]),
+ 	MDEF_CAPTION("---------------", colors[2]),
++	MDEF_HANDLER("Recover Parental PIN", recover_pin, colors[5]),
++	MDEF_CAPTION("---------------", colors[4]),
+ 	MDEF_HANDLER("Dump Amiibo Keys", dump_amiibo_keys, colors[3]),
+ 	MDEF_MENU("Dump Mariko Partials (requires reboot)", &menu_partials, colors[4]),
+ 	MDEF_CAPTION("---------------", colors[5]),
