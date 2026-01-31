@@ -19,12 +19,16 @@ extern FATFS emmc_fs;
 #define OVERLAP 64
 #define PIN_KEYWORD "pinCode"
 
-static int extract_pin(const char *buffer, size_t size, char *out_pin) {
-    const char *pos = NULL;
-    size_t keyword_len = strlen(PIN_KEYWORD);
+// Strategy 1: Format A (JSON) - Used in FW 20.x, 21.x
+// Looks for "pinCode": "XXXX"
+static int try_extract_json(const char *buffer, size_t size, char *out_pin) {
+    const char *keyword = "\"pinCode\"";
+    size_t keyword_len = strlen(keyword);
     
+    // Simple substring search
+    const char *pos = NULL;
     for (size_t i = 0; i <= size - keyword_len; i++) {
-        if (memcmp(buffer + i, PIN_KEYWORD, keyword_len) == 0) {
+        if (memcmp(buffer + i, keyword, keyword_len) == 0) {
             pos = buffer + i + keyword_len;
             break;
         }
@@ -32,15 +36,72 @@ static int extract_pin(const char *buffer, size_t size, char *out_pin) {
     
     if (!pos) return 0;
     
+    // Skip non-digits (finding the value)
     while (pos < buffer + size && (*pos < '0' || *pos > '9')) pos++;
     
+    // Extract digits
     int i = 0;
     while (pos < buffer + size && *pos >= '0' && *pos <= '9' && i < 8) {
         out_pin[i++] = *pos++;
     }
     out_pin[i] = '\0';
     
+    // Validation: 4-8 digits
     return (i >= 4 && i <= 8);
+}
+
+// Strategy 2: Format B (Binary Signature) - Observed in FW 13.x
+// The PIN is stored as a raw ASCII string in the 8 bytes immediately preceding
+// the signature: 03 0C 06 07
+static int try_extract_binary(const char *buffer, size_t size, char *out_pin) {
+    const char sig[] = {0x03, 0x0C, 0x06, 0x07};
+    size_t sig_len = sizeof(sig);
+    
+    // We need at least 8 bytes (data) + 4 bytes (sig)
+    if (size < 8 + sig_len) return 0;
+
+    for (size_t i = 8; i <= size - sig_len; i++) {
+        if (memcmp(buffer + i, sig, sig_len) == 0) {
+            // Found signature. PIN is in [i-8 .. i]
+            const char *pin_buf = buffer + i - 8;
+            
+            // Extract printable digits from the buffer.
+            // The buffer might be null-padded (e.g., "0000\0\0\0\0")
+            int p_idx = 0;
+            for (int k = 0; k < 8; k++) {
+                char c = pin_buf[k];
+                if (c >= '0' && c <= '9') {
+                    out_pin[p_idx++] = c;
+                } else if (c == 0x00) {
+                    // Padding is expected and ignored
+                } else {
+                    // Unexpected garbage? If strict, we could fail here.
+                    // For now, ignore non-digit/non-null bytes to be robust.
+                }
+            }
+            out_pin[p_idx] = '\0';
+            
+            // Validation: 4-8 digits
+            if (p_idx >= 4 && p_idx <= 8) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int extract_pin(const char *buffer, size_t size, char *out_pin) {
+    // Try Format B (Binary) first (more specific signature)
+    if (try_extract_binary(buffer, size, out_pin)) {
+        return 1;
+    }
+    
+    // Fallback to Format A (JSON)
+    if (try_extract_json(buffer, size, out_pin)) {
+        return 1;
+    }
+    
+    return 0;
 }
 
 static int scan_file(const char *path, char *out_pin) {
