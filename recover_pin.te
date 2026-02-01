@@ -1,5 +1,6 @@
 #REQUIRE KEYS
 #REQUIRE SD
+
 p=println
 pr=print
 pe={pause() exit()}
@@ -7,162 +8,247 @@ pe={pause() exit()}
 p("Nintendo Switch Parental Control PIN Recovery")
 p("")
 
-op=["Exit", "Recover from SysMMC", "Recover from EmuMMC"].copy()
-r=menu(op, 0)
+# =============================================================================
+# Constants & Signatures
+# =============================================================================
+
+# Path to the Parental Control Save Data (8000000000000100)
+SAVE_PATH = "bis:/save/8000000000000100"
+
+# File detection signatures (filename strings in the save container)
+SIG_PT_CONF       = ["BYTE[]", 0x70, 0x74, 0x2E, 0x63, 0x6F, 0x6E, 0x66, 0x00] # "pt.conf"
+SIG_SETTINGS_DAT  = ["BYTE[]", 0x73, 0x65, 0x74, 0x74, 0x69, 0x6E, 0x67, 0x73, 0x2E, 0x64, 0x61, 0x74, 0x00] # "settings.dat"
+SIG_PT_DAT        = ["BYTE[]", 0x70, 0x74, 0x2E, 0x64, 0x61, 0x74, 0x00] # "pt.dat"
+SIG_SETTINGS_CONF = ["BYTE[]", 0x73, 0x65, 0x74, 0x74, 0x69, 0x6E, 0x67, 0x73, 0x2E, 0x63, 0x6F, 0x6E, 0x66, 0x00] # "settings.conf"
+
+# PIN extraction signatures
+# Binary format: 03 0C 06 07 (PIN is 8 bytes immediately preceding this)
+SIG_PIN_BIN  = ["BYTE[]", 0x03, 0x0C, 0x06, 0x07]
+# JSON format: "pinCode" (PIN follows as a string value "XXXX")
+SIG_PIN_JSON = ["BYTE[]", 0x22, 0x70, 0x69, 0x6E, 0x43, 0x6F, 0x64, 0x65, 0x22]
+
+# =============================================================================
+# Menu & Setup
+# =============================================================================
+
+op = ["Exit", "Recover from SysMMC", "Recover from EmuMMC"].copy()
+r = menu(op, 0)
 clear()
-
-if (r==0) { exit() }
-
-if (r==1) {
+if (r == 0) { exit() }
+if (r == 1) {
     p("Mounting SysMMC SYSTEM...")
     if (mountsys("SYSTEM")) { pr("Mount failed!") pe() }
 }
-if (r==2) {
+if (r == 2) {
     p("Mounting EmuMMC SYSTEM...")
     if (mountemu("SYSTEM")) { pr("Mount failed!") pe() }
 }
 
-save_path = "bis:/save/8000000000000100"
+# =============================================================================
+# File Detection
+# =============================================================================
 
-if (!fsexists(save_path)) {
+if (!fsexists(SAVE_PATH)) {
     p("Error: Parental Control save file not found!")
     pe()
 }
 
 p("Reading raw save container...")
-raw_save = readfile(save_path)
+raw_save = readfile(SAVE_PATH)
 
-# Detect which files exist by searching for filename strings
 p("Detecting files...")
+has_pt_conf       = raw_save.find(SIG_PT_CONF)
+has_settings_dat  = raw_save.find(SIG_SETTINGS_DAT)
+has_pt_dat        = raw_save.find(SIG_PT_DAT)
+has_settings_conf = raw_save.find(SIG_SETTINGS_CONF)
 
-pt_conf_sig = ["BYTE[]", 0x70, 0x74, 0x2E, 0x63, 0x6F, 0x6E, 0x66, 0x00]
-settings_dat_sig = ["BYTE[]", 0x73, 0x65, 0x74, 0x74, 0x69, 0x6E, 0x67, 0x73, 0x2E, 0x64, 0x61, 0x74, 0x00]
-pt_dat_sig = ["BYTE[]", 0x70, 0x74, 0x2E, 0x64, 0x61, 0x74, 0x00]
-settings_conf_sig = ["BYTE[]", 0x73, 0x65, 0x74, 0x74, 0x69, 0x6E, 0x67, 0x73, 0x2E, 0x63, 0x6F, 0x6E, 0x66, 0x00]
+count_found = 0
+if (has_pt_conf >= 0)       { p("  - /pt.conf"); count_found = count_found + 1 }
+if (has_settings_dat >= 0)  { p("  - /settings.dat"); count_found = count_found + 1 }
+if (has_pt_dat >= 0)        { p("  - /pt.dat"); count_found = count_found + 1 }
+if (has_settings_conf >= 0) { p("  - /settings.conf"); count_found = count_found + 1 }
 
-has_pt_conf = raw_save.find(pt_conf_sig)
-has_settings_dat = raw_save.find(settings_dat_sig)
-has_pt_dat = raw_save.find(pt_dat_sig)
-has_settings_conf = raw_save.find(settings_conf_sig)
-
-files_found = 0
-if (has_pt_conf >= 0) { p("  - /pt.conf") files_found = files_found + 1 }
-if (has_settings_dat >= 0) { p("  - /settings.dat") files_found = files_found + 1 }
-if (has_pt_dat >= 0) { p("  - /pt.dat") files_found = files_found + 1 }
-if (has_settings_conf >= 0) { p("  - /settings.conf") files_found = files_found + 1 }
-
-if (files_found == 0) {
+if (count_found == 0) {
     p("Error: No parental control config files found!")
     pe()
 }
 
 p("")
 p("Opening save...")
-s = readsave(save_path)
+s = readsave(SAVE_PATH)
 
-# PIN extraction macro
-sig_bin = ["BYTE[]", 0x03, 0x0C, 0x06, 0x07]
-sig_json = ["BYTE[]", 0x22, 0x70, 0x69, 0x6E, 0x43, 0x6F, 0x64, 0x65, 0x22]
+# =============================================================================
+# Extraction Logic
+# =============================================================================
 
-extract_pin = {
-    idx_json = f_buf.find(sig_json)
+# Extraction Function for JSON format (.conf)
+# Looks for "pinCode":"XXXX" pattern
+extract_pin_json = {
+    idx_json = f_buf.find(SIG_PIN_JSON)
 
     if (idx_json >= 0) {
-        chunk = f_buf.slice(idx_json + 9, 32).project()
+        # Signature is "pinCode", calculate offset dynamically
+        offset = idx_json + SIG_PIN_JSON.len()
+
         pr("PIN: ")
         color(0x00FF00)
 
+        # Read a chunk for processing (max 60 chars)
+        chunk = f_buf.slice(offset, 60).project()
+
         digit_count = 0
-        chunk.foreach("b") {
-            if (b >= 48 && b <= 57 && digit_count < 20) {
-                pr((b - 48).str())
-                digit_count = digit_count + 1
+        quote_count = 0
+        done = 0
+        i = 0
+
+        while (i < 60 && done == 0) {
+            b = chunk[i]
+
+            if (b == 0x22) { # Quote
+                quote_count = quote_count + 1
+                if (quote_count >= 2) {
+                    # Closing quote -> Stop
+                    done = 1
+                }
             } .else() {
-                if (digit_count > 0) { digit_count = 100 }
+                if (quote_count == 1) {
+                    # Inside the value
+                    if (b >= 48 && b <= 57) { # Is digit 0-9
+                        pr((b - 48).str())
+                        digit_count = digit_count + 1
+                    }
+                }
             }
+            i = i + 1
         }
 
         color(0xFFFFFF)
         p("")
 
-        if (digit_count > 0 && digit_count < 20) { found = 1 }
-    } .else() {
-        idx_bin = f_buf.find(sig_bin)
-
-        if (idx_bin >= 8) {
-            pin_bytes = f_buf.slice(idx_bin - 8, 8).project()
-            pr("PIN: ")
-            color(0x00FF00)
-
-            pin_bytes.foreach("b") {
-                if (b >= 48 && b <= 57) {
-                    pr((b - 48).str())
-                }
-            }
-
-            color(0xFFFFFF)
-            p("")
+        if (done == 1 && digit_count > 0) {
             found = 1
         }
     }
 }
 
-# Try files in priority order
-# Apply mutual exclusivity: .conf versions supersede .dat versions
-# (if settings.conf exists, settings.dat is likely just an artifact string)
+# Extraction Function for Binary format (.dat)
+# Looks for fixed binary signature and reads 8 bytes preceding it
+extract_pin_binary = {
+    idx_bin = f_buf.find(SIG_PIN_BIN)
+
+    if (idx_bin >= 8) {
+        # PIN is stored in the 8 bytes immediately before the signature
+        offset = idx_bin - 8
+
+        pr("PIN: ")
+        color(0x00FF00)
+
+        # Read the 8 PIN bytes
+        chunk = f_buf.slice(offset, 8).project()
+
+        digit_count = 0
+        i = 0
+
+        while (i < 8) {
+            b = chunk[i]
+
+            if (b >= 48 && b <= 57) { # Is digit 0-9
+                pr((b - 48).str())
+                digit_count = digit_count + 1
+            }
+            i = i + 1
+        }
+
+        color(0xFFFFFF)
+        p("")
+
+        if (digit_count > 0) {
+            found = 1
+        }
+    }
+}
+
+# =============================================================================
+# Execution Loop
+# =============================================================================
+
 found = 0
 tried_files = 0
 
-# Check settings files (prefer .conf if it exists)
+# Scan Order Logic:
+# 1. /settings.* files take precedence (Legacy & OTA edge cases)
+# 2. /pt.* files checked if settings not found
+# Within each group, .conf (JSON) is preferred over .dat (Binary)
+
+# Group 1: Settings Files
 if (found == 0) {
     if (has_settings_conf >= 0) {
         p("Reading /settings.conf...")
         f_buf = s.read("/settings.conf")
-        tried_files = tried_files + 1
-        extract_pin()
+        if (f_buf.len() >= 10) {
+            tried_files = tried_files + 1
+            extract_pin_json()
+        } .else() {
+            p("  Skipped (empty or invalid)")
+        }
     } .else() {
         if (has_settings_dat >= 0) {
             p("Reading /settings.dat...")
             f_buf = s.read("/settings.dat")
-            tried_files = tried_files + 1
-            extract_pin()
+            if (f_buf.len() >= 10) {
+                tried_files = tried_files + 1
+                extract_pin_binary()
+            } .else() {
+                p("  Skipped (empty or invalid)")
+            }
         }
     }
 }
 
-# Check pt files (prefer .conf if it exists)
+# Group 2: PT Files
 if (found == 0) {
     if (has_pt_conf >= 0) {
         p("Reading /pt.conf...")
         f_buf = s.read("/pt.conf")
-        tried_files = tried_files + 1
-        extract_pin()
+        if (f_buf.len() >= 10) {
+            tried_files = tried_files + 1
+            extract_pin_json()
+        } .else() {
+            p("  Skipped (empty or invalid)")
+        }
     } .else() {
         if (has_pt_dat >= 0) {
             p("Reading /pt.dat...")
             f_buf = s.read("/pt.dat")
-            tried_files = tried_files + 1
-            extract_pin()
+            if (f_buf.len() >= 10) {
+                tried_files = tried_files + 1
+                extract_pin_binary()
+            } .else() {
+                p("  Skipped (empty or invalid)")
+            }
         }
     }
 }
 
+# =============================================================================
+# Final Status
+# =============================================================================
+
+p("")
 if (found == 0) {
     color(0xFF0000)
     if (tried_files == 0) {
-        p("Error: No PIN files found!")
-        p("Expected: settings.conf/dat or pt.conf/dat")
+        p("Error: No valid PIN files could be found/read!")
     } .else() {
-        p("Error: No PIN signature found in any file")
+        p("Error: No PIN signature found in files.")
         p("Files checked: " + tried_files.str())
     }
-    color(0xFFFFFF)
 } .else() {
     color(0x00FF00)
-    p("Success!")
-    color(0xFFFFFF)
+    p("Success! PIN Recovered.")
 }
+color(0xFFFFFF)
 
-p("\nPress any key...")
+p("\nPress any key to exit...")
 pause()
 exit()
