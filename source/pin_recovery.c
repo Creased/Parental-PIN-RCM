@@ -12,7 +12,6 @@
 
 extern hekate_config h_cfg;
 extern emummc_cfg_t emu_cfg;
-extern sdmmc_storage_t emmc_storage;
 extern FATFS emmc_fs;
 
 #define CHUNK_SIZE (32 * 1024)
@@ -20,69 +19,77 @@ extern FATFS emmc_fs;
 #define PIN_KEYWORD "pinCode"
 
 // Strategy 1: JSON Format - Used in FW 20.x, 21.x
-// Looks for "pinCode": "XXXX"
+// Looks for "pinCode":"XXXX" pattern
 static int try_extract_json(const char *buffer, size_t size, char *out_pin) {
     const char *keyword = "\"pinCode\"";
     size_t keyword_len = strlen(keyword);
     
-    // Simple substring search
-    const char *pos = NULL;
-    for (size_t i = 0; i <= size - keyword_len; i++) {
-        if (memcmp(buffer + i, keyword, keyword_len) == 0) {
-            pos = buffer + i + keyword_len;
-            break;
-        }
-    }
-    
-    if (!pos) return 0;
-    
-    // Skip non-digits (finding the value)
-    while (pos < buffer + size && (*pos < '0' || *pos > '9')) pos++;
-    
-    // Extract digits
-    int i = 0;
-    while (pos < buffer + size && *pos >= '0' && *pos <= '9' && i < 8) {
-        out_pin[i++] = *pos++;
-    }
-    out_pin[i] = '\0';
-    
-    // Validation: 4-8 digits
-    return (i >= 4 && i <= 8);
-}
-
-// Strategy 2: Binary Signature Format - Observed in FW 13.x
-// The PIN is stored as a raw ASCII string in the 8 bytes immediately preceding
-// the signature: 03 0C 06 07
-static int try_extract_binary(const char *buffer, size_t size, char *out_pin) {
-    const char sig[] = {0x03, 0x0C, 0x06, 0x07};
-    size_t sig_len = sizeof(sig);
-    
-    // We need at least 8 bytes (data) + 4 bytes (sig)
-    if (size < 8 + sig_len) return 0;
-
-    for (size_t i = 8; i <= size - sig_len; i++) {
-        if (memcmp(buffer + i, sig, sig_len) == 0) {
-            // Found signature. PIN is in [i-8 .. i]
-            const char *pin_buf = buffer + i - 8;
+    for (size_t idx = 0; idx <= size - keyword_len; idx++) {
+        if (memcmp(buffer + idx, keyword, keyword_len) == 0) {
+            size_t offset = idx + keyword_len;
+            int digit_count = 0;
+            int quote_count = 0;
+            int done = 0;
             
-            // Extract printable digits from the buffer.
-            // The buffer might be null-padded (e.g., "0000\0\0\0\0")
-            int p_idx = 0;
-            for (int k = 0; k < 8; k++) {
-                char c = pin_buf[k];
-                if (c >= '0' && c <= '9') {
-                    out_pin[p_idx++] = c;
-                } else if (c == 0x00) {
-                    // Padding is expected and ignored
+            // Read a chunk for processing (max 60 chars lookahead)
+            for (size_t i = 0; i < 60 && (offset + i) < size && !done; i++) {
+                char b = buffer[offset + i];
+                
+                if (b == 0x22) { // '"' Quote
+                    quote_count++;
+                    if (quote_count >= 2) {
+                        done = 1; // Closing quote -> Stop
+                    }
                 } else {
-                    // Unexpected garbage? If strict, we could fail here.
-                    // For now, ignore non-digit/non-null bytes to be robust.
+                    if (quote_count == 1) {
+                        // Inside the value string
+                        if (b >= '0' && b <= '9' && digit_count < 8) { // Is digit 0-9
+                            out_pin[digit_count++] = b;
+                        }
+                    }
                 }
             }
-            out_pin[p_idx] = '\0';
             
-            // Validation: 4-8 digits
-            if (p_idx >= 4 && p_idx <= 8) {
+            if (done && digit_count > 0) {
+                out_pin[digit_count] = '\0';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Strategy 2: Binary Signature Format
+// This parser looks for the known binary structure used by the system:
+// - PIN stored as 4-8 ASCII digits in the first 8 bytes
+// - Fixed meta bytes appear at +10 (0x06) and +12 (0x02)
+static int try_extract_binary(const char *buffer, size_t size, char *out_pin) {
+    if (size < 16) return 0;
+
+    // Scan the buffer for the metadata signature
+    for (size_t i = 0; i <= size - 16; i++) {
+        // Optimized: check markers first
+        if (buffer[i + 10] == 0x06 && buffer[i + 12] == 0x02) {
+            int digit_count = 0;
+            int valid = 1;
+            
+            // Verify the PIN bytes (0..7) are strictly digits or null padding
+            for (int k = 0; k < 8 && valid; k++) {
+                char cb = buffer[i + k];
+                if (cb >= '0' && cb <= '9') {
+                    digit_count++;
+                } else {
+                    if (cb != 0x00) {
+                        valid = 0;
+                    }
+                }
+            }
+            
+            if (valid && digit_count >= 4 && digit_count <= 8) {
+                for (int k = 0; k < digit_count; k++) {
+                    out_pin[k] = buffer[i + k];
+                }
+                out_pin[digit_count] = '\0';
                 return 1;
             }
         }
