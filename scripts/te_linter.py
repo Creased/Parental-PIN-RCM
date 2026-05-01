@@ -253,62 +253,37 @@ class Parser:
         return self.parse_expr()
 
     def parse_expr(self) -> Node:
-        expr = self.parse_logic_or()
+        # Real TE (ABadIdeaV3) has NO operator precedence: its eval() walks
+        # operators strictly left-to-right inside an "EquationSeperator"
+        # (statement) boundary, applying each via callMemberFunctionDirect on
+        # the running accumulator. To make this emulator surface the same
+        # bugs (e.g. `i < max && found == 0` parses as `((i < max) && found)
+        # == 0` on real TE), we mirror that: every binary op has equal
+        # precedence and is left-associative. Use parens to group.
+        expr = self.parse_binop_flat()
         if self.current().type == '=':
             self.consume('=')
             val = self.parse_expr()
             return Assign(expr, val)
         return expr
 
-    def parse_logic_or(self) -> Node:
-        left = self.parse_logic_and()
-        while self.current().type == 'OP' and self.current().value == '||':
-            op = self.consume().value
-            right = self.parse_logic_and()
-            left = BinOp(left, op, right)
-        return left
-
-    def parse_logic_and(self) -> Node:
-        left = self.parse_equality()
-        while self.current().type == 'OP' and self.current().value == '&&':
-            op = self.consume().value
-            right = self.parse_equality()
-            left = BinOp(left, op, right)
-        return left
-
-    def parse_equality(self) -> Node:
-        left = self.parse_relational()
-        while self.current().type == 'OP' and self.current().value in ('==', '!='):
-            op = self.consume().value
-            right = self.parse_relational()
-            left = BinOp(left, op, right)
-        return left
-
-    def parse_relational(self) -> Node:
-        left = self.parse_additive()
-        is_relational_op = lambda t: (t.type == 'OP' and t.value in ('<=', '>=', '<', '>')) or t.type in ('<', '>')
-        
-        while is_relational_op(self.current()):
-            op = self.consume().value
-            right = self.parse_additive()
-            left = BinOp(left, op, right)
-        return left
-
-    def parse_additive(self) -> Node:
-        left = self.parse_multiplicative()
-        while self.current().type in ('+', '-'):
-            op = self.consume().value
-            right = self.parse_multiplicative()
-            left = BinOp(left, op, right)
-        return left
-
-    def parse_multiplicative(self) -> Node:
+    def parse_binop_flat(self) -> Node:
         left = self.parse_primary()
-        while self.current().type in ('*', '/'):
+        while self._is_binary_op(self.current()):
             op = self.consume().value
             right = self.parse_primary()
             left = BinOp(left, op, right)
         return left
+
+    @staticmethod
+    def _is_binary_op(tok) -> bool:
+        # Two-char ops are emitted as type='OP'. Single-char arithmetic and
+        # relational tokens are emitted with their own type (e.g. '+'/'<').
+        if tok.type == 'OP' and tok.value in ('||', '&&', '==', '!=', '<=', '>='):
+            return True
+        if tok.type in ('+', '-', '*', '/', '<', '>'):
+            return True
+        return False
 
     def parse_primary(self) -> Optional[Node]:
         tok = self.current()

@@ -268,9 +268,18 @@ class Evaluator:
         elif isinstance(node, ArrayAccess):
             target = self.visit(node.target)
             idx = self.visit(node.index).value
+            # Real TE prints "[FATAL] Accessing index N while array is M long"
+            # via SCRIPT_FATAL_ERR followed by "Error occured on or near line L".
+            # Mirror that format so script bugs look identical here and on device.
             if isinstance(target, TEArray):
+                if idx < 0 or idx >= len(target.value):
+                    line = getattr(node.index, 'line', None) or getattr(node, 'line', '?')
+                    raise TEError(f"[FATAL] Accessing index {idx} while array is {len(target.value)} long\nError occured on or near line {line}")
                 return target.value[idx]
             if isinstance(target, TEByteArray):
+                if idx < 0 or idx >= len(target.value):
+                    line = getattr(node.index, 'line', None) or getattr(node, 'line', '?')
+                    raise TEError(f"[FATAL] Accessing index {idx} while array is {len(target.value)} long\nError occured on or near line {line}")
                 return TEInt(target.value[idx])
             raise TEError("Cannot index object")
 
