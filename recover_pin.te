@@ -130,6 +130,11 @@ extract_pin_json = {
 }
 
 # Extraction Function for Binary format (.dat)
+# Anchor on the trailer "02 00 00 00" at +12..+15: it's the only invariant
+# byte pattern across firmware versions. The previous "+10 == 0x06" byte was
+# firmware-specific metadata that varied between saves.
+# Bytes 0..7 hold the PIN as ASCII digits possibly followed by a null and
+# then echoed/garbage digits, so we stop counting at the first null.
 extract_pin_binary = {
     file_size = f_buf.len()
     max_scan = file_size - 16
@@ -138,23 +143,27 @@ extract_pin_binary = {
     p("Scanning binary buffer for PIN structure...")
 
     while (i < max_scan && (found == 0)) {
-        if ((f_buf[i + 10] == 0x06) && (f_buf[i + 12] == 0x02)) {
-            p("  Found potential PIN structure at offset " + i.str())
-
+        if ((f_buf[i + 12] == 0x02) && (f_buf[i + 13] == 0x00) && (f_buf[i + 14] == 0x00) && (f_buf[i + 15] == 0x00)) {
             digit_count = 0
             k = 0
             valid = 1
+            stop = 0
             while (k < 8 && (valid == 1)) {
                 cb = f_buf[i + k]
                 if ((cb >= 48) && (cb <= 57)) {
-                    digit_count = digit_count + 1
+                    if (stop == 0) { digit_count = digit_count + 1 }
                 } .else() {
-                    if (cb != 0x00) { valid = 0 }
+                    if (cb == 0x00) {
+                        stop = 1
+                    } .else() {
+                        valid = 0
+                    }
                 }
                 k = k + 1
             }
 
             if ((valid == 1) && (digit_count >= 4) && (digit_count <= 8)) {
+                p("  Found PIN structure at offset " + i.str())
                 pr("PIN: ")
                 color(0x00FF00)
                 k = 0

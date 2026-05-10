@@ -60,38 +60,45 @@ static int try_extract_json(const char *buffer, size_t size, char *out_pin) {
 }
 
 // Strategy 2: Binary Signature Format
-// This parser looks for the known binary structure used by the system:
-// - PIN stored as 4-8 ASCII digits in the first 8 bytes
-// - Fixed meta bytes appear at +10 (0x06) and +12 (0x02)
+// PIN block layout (16 bytes, sitting in zero-padded region):
+//   +0..+7  : 4-8 ASCII digits, possibly followed by a 0x00 and echoed
+//             digits (e.g. "1111\x00111" for PIN 1111)
+//   +8..+11 : firmware-specific metadata (varies between saves)
+//   +12..+15: trailer "02 00 00 00" — invariant across firmware versions
+//
+// We anchor on the trailer because the +8..+11 bytes (which an earlier
+// version of this code keyed on via "+10 == 0x06") differ between
+// firmwares, causing legitimate PINs to be missed.
 static int try_extract_binary(const char *buffer, size_t size, char *out_pin) {
     if (size < 16) return 0;
 
-    // Scan the buffer for the metadata signature
     for (size_t i = 0; i <= size - 16; i++) {
-        // Optimized: check markers first
-        if (buffer[i + 10] == 0x06 && buffer[i + 12] == 0x02) {
-            int digit_count = 0;
-            int valid = 1;
-            
-            // Verify the PIN bytes (0..7) are strictly digits or null padding
-            for (int k = 0; k < 8 && valid; k++) {
-                char cb = buffer[i + k];
-                if (cb >= '0' && cb <= '9') {
-                    digit_count++;
-                } else {
-                    if (cb != 0x00) {
-                        valid = 0;
-                    }
-                }
+        if (buffer[i + 12] != 0x02) continue;
+        if (buffer[i + 13] != 0x00 || buffer[i + 14] != 0x00 || buffer[i + 15] != 0x00) continue;
+
+        int digit_count = 0;
+        int valid = 1;
+        int stop = 0;
+
+        // First null in 0..7 marks end of PIN; trailing bytes may still be
+        // digits (echoed value) but are not part of the PIN.
+        for (int k = 0; k < 8 && valid; k++) {
+            char cb = buffer[i + k];
+            if (cb >= '0' && cb <= '9') {
+                if (!stop) digit_count++;
+            } else if (cb == 0x00) {
+                stop = 1;
+            } else {
+                valid = 0;
             }
-            
-            if (valid && digit_count >= 4 && digit_count <= 8) {
-                for (int k = 0; k < digit_count; k++) {
-                    out_pin[k] = buffer[i + k];
-                }
-                out_pin[digit_count] = '\0';
-                return 1;
+        }
+
+        if (valid && digit_count >= 4 && digit_count <= 8) {
+            for (int k = 0; k < digit_count; k++) {
+                out_pin[k] = buffer[i + k];
             }
+            out_pin[digit_count] = '\0';
+            return 1;
         }
     }
     return 0;
